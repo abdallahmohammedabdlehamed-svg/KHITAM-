@@ -1,0 +1,6 @@
+{
+  "name": "خِتام | KHITAM - منصة إدارة وتخطيط حفظ القرآن الكريم",
+  "description": "منصة متكاملة واحترافية لتخطيط حفظ القرآن الكريم، متابعة الإنجاز الفعلي، تنظيم المراجعة التكيفية، وقياس مستوى الثبات وتعديل الخطة الذاتي بدقة وموثوقية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
