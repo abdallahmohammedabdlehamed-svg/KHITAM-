@@ -11,7 +11,7 @@ export interface ValidationReport {
   expectedSurahs: number;
   expectedAyahs: number;
   missingAyahs: Array<{ surah: number; ayah: number }>;
-  duplicateAyahs: Array<{ surah: number; ayah: number; count: number }>;
+  duplicates: Array<{ surah: number; ayah: number; count: number }>;
   formatErrors: string[];
   surahDetails: Array<{
     number: number;
@@ -23,7 +23,7 @@ export interface ValidationReport {
 }
 
 export class QuranService {
-  private static ayahsCache: Record<string, Ayah[]> = quranAyahsData as Record<string, Ayah[]>;
+  private static ayahsCache: Record<string, Array<{ ayahNumber: number; text: string }>> = quranAyahsData as unknown as Record<string, Array<{ ayahNumber: number; text: string }>>;
 
   /**
    * Get all 114 Surahs

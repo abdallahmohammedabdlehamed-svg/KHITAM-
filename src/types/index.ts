@@ -21,6 +21,17 @@ export interface User {
   createdAt: string;
 }
 
+export interface UserAccount extends User {
+  passwordHash: string;
+  lastLoginAt?: string;
+}
+
+export interface AuthSession {
+  token: string;
+  user: User;
+  expiresAt: string;
+}
+
 export interface UserSettings {
   dailyAvailableMinutes: number;
   studyDays: number[]; // 0=Sunday, 1=Monday, ..., 6=Saturday

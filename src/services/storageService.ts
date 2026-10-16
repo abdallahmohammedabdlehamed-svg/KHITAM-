@@ -9,9 +9,11 @@ import {
   StudySession,
   ReviewRecord,
   PlanChangeProposal,
-  AyahStatus
+  AyahStatus,
+  GoalStatus
 } from '../types';
 import { QuranService } from './quranService';
+import { AuthService } from './authService';
 
 const STORAGE_KEYS = {
   USER: 'khitam_user_v1',
@@ -28,13 +30,49 @@ const STORAGE_KEYS = {
   IDEMPOTENCY: 'khitam_idempotency_v1',
 };
 
+const memoryStore = new Map<string, string>();
+
+const safeStorage = {
+  getItem: (key: string): string | null => {
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        return window.localStorage.getItem(key);
+      } catch (e) {
+        return memoryStore.get(key) || null;
+      }
+    }
+    return memoryStore.get(key) || null;
+  },
+  setItem: (key: string, value: string): void => {
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        window.localStorage.setItem(key, value);
+      } catch (e) {
+        memoryStore.set(key, value);
+      }
+    } else {
+      memoryStore.set(key, value);
+    }
+  },
+  clear: (): void => {
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      try {
+        window.localStorage.clear();
+      } catch (e) {
+        memoryStore.clear();
+      }
+    }
+    memoryStore.clear();
+  }
+};
+
 export class StorageService {
   // Idempotency cache to prevent double submission
   private static processedTokens: Set<string> = new Set();
 
   public static initialize(): void {
     // Check if initial data exists, if not seed initial demo user & goal
-    if (!localStorage.getItem(STORAGE_KEYS.USER)) {
+    if (!safeStorage.getItem(STORAGE_KEYS.USER)) {
       this.seedInitialData();
     }
   }
@@ -383,36 +421,42 @@ export class StorageService {
     ];
 
     // Persist all
-    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
-    localStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify([goal]));
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID, goal.id);
-    localStorage.setItem(STORAGE_KEYS.RANGES, JSON.stringify(ranges));
-    localStorage.setItem(STORAGE_KEYS.AYAH_PROGRESS, JSON.stringify(progressMap));
-    localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify([plan]));
-    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
-    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
-    localStorage.setItem(STORAGE_KEYS.PROPOSALS, JSON.stringify([]));
+    safeStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
+    safeStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    safeStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify([goal]));
+    safeStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID, goal.id);
+    safeStorage.setItem(STORAGE_KEYS.RANGES, JSON.stringify(ranges));
+    safeStorage.setItem(STORAGE_KEYS.AYAH_PROGRESS, JSON.stringify(progressMap));
+    safeStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify([plan]));
+    safeStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
+    safeStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
+    safeStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
+    safeStorage.setItem(STORAGE_KEYS.PROPOSALS, JSON.stringify([]));
   }
 
   // --- User & Settings ---
 
   public static getUser(): User {
-    const raw = localStorage.getItem(STORAGE_KEYS.USER);
+    const authUser = AuthService.getCurrentUser();
+    if (authUser) return authUser;
+
+    const raw = safeStorage.getItem(STORAGE_KEYS.USER);
     if (!raw) {
       this.seedInitialData();
-      return JSON.parse(localStorage.getItem(STORAGE_KEYS.USER)!);
+      return JSON.parse(safeStorage.getItem(STORAGE_KEYS.USER)!);
     }
     return JSON.parse(raw);
   }
 
   public static saveUser(user: User): void {
-    localStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
+    safeStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(user));
   }
 
   public static getSettings(): UserSettings {
-    const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+    const user = this.getUser();
+    const raw =
+      safeStorage.getItem(STORAGE_KEYS.SETTINGS + '_' + user.id) ||
+      safeStorage.getItem(STORAGE_KEYS.SETTINGS);
     return raw
       ? JSON.parse(raw)
       : {
@@ -426,19 +470,26 @@ export class StorageService {
   }
 
   public static saveSettings(settings: UserSettings): void {
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    const user = this.getUser();
+    safeStorage.setItem(STORAGE_KEYS.SETTINGS + '_' + user.id, JSON.stringify(settings));
+    safeStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
   }
 
   // --- Goals ---
 
   public static getGoals(): MemorizationGoal[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.GOALS);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.GOALS);
+    const all: MemorizationGoal[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((g) => g.userId === user.id);
   }
 
   public static getActiveGoal(): MemorizationGoal | null {
+    const user = this.getUser();
     const goals = this.getGoals();
-    const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_GOAL_ID);
+    const activeId =
+      safeStorage.getItem(STORAGE_KEYS.ACTIVE_GOAL_ID + '_' + user.id) ||
+      safeStorage.getItem(STORAGE_KEYS.ACTIVE_GOAL_ID);
     if (activeId) {
       const found = goals.find((g) => g.id === activeId);
       if (found) return found;
@@ -447,37 +498,54 @@ export class StorageService {
   }
 
   public static saveGoal(goal: MemorizationGoal): void {
-    const goals = this.getGoals();
-    const idx = goals.findIndex((g) => g.id === goal.id);
+    const raw = safeStorage.getItem(STORAGE_KEYS.GOALS);
+    const all: MemorizationGoal[] = raw ? JSON.parse(raw) : [];
+    const idx = all.findIndex((g) => g.id === goal.id);
     if (idx >= 0) {
-      goals[idx] = goal;
+      all[idx] = goal;
     } else {
-      goals.unshift(goal);
+      all.unshift(goal);
     }
-    localStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(goals));
+    safeStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(all));
     if (goal.status === 'active') {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID, goal.id);
+      safeStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID + '_' + goal.userId, goal.id);
+      safeStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID, goal.id);
     }
   }
 
   public static setActiveGoal(goalId: string): void {
-    const goals = this.getGoals().map((g) => ({
-      ...g,
-      status: (g.id === goalId ? 'active' : 'paused') as GoalStatus,
-    }));
-    localStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(goals));
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID, goalId);
+    const user = this.getUser();
+    const raw = safeStorage.getItem(STORAGE_KEYS.GOALS);
+    const all: MemorizationGoal[] = raw ? JSON.parse(raw) : [];
+    const updated = all.map((g) => {
+      if (g.userId === user.id) {
+        return {
+          ...g,
+          status: (g.id === goalId ? 'active' : 'paused') as GoalStatus,
+        };
+      }
+      return g;
+    });
+    safeStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(updated));
+    safeStorage.setItem(STORAGE_KEYS.ACTIVE_GOAL_ID + '_' + user.id, goalId);
   }
 
   // --- Ranges ---
 
   public static getRanges(): MemorizationRange[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.RANGES);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.RANGES);
+    const all: MemorizationRange[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((r) => r.userId === user.id);
   }
 
   public static saveRanges(ranges: MemorizationRange[]): void {
-    localStorage.setItem(STORAGE_KEYS.RANGES, JSON.stringify(ranges));
+    const user = this.getUser();
+    const raw = safeStorage.getItem(STORAGE_KEYS.RANGES);
+    const otherUsersRanges = (raw ? (JSON.parse(raw) as MemorizationRange[]) : []).filter(
+      (r) => r.userId !== user.id
+    );
+    safeStorage.setItem(STORAGE_KEYS.RANGES, JSON.stringify([...otherUsersRanges, ...ranges]));
   }
 
   public static addRange(range: Omit<MemorizationRange, 'id' | 'createdAt'>): MemorizationRange {
@@ -528,12 +596,12 @@ export class StorageService {
   // --- Ayah Progress ---
 
   public static getProgressMap(): Record<string, AyahProgress> {
-    const raw = localStorage.getItem(STORAGE_KEYS.AYAH_PROGRESS);
+    const raw = safeStorage.getItem(STORAGE_KEYS.AYAH_PROGRESS);
     return raw ? JSON.parse(raw) : {};
   }
 
   public static saveProgressMap(map: Record<string, AyahProgress>): void {
-    localStorage.setItem(STORAGE_KEYS.AYAH_PROGRESS, JSON.stringify(map));
+    safeStorage.setItem(STORAGE_KEYS.AYAH_PROGRESS, JSON.stringify(map));
   }
 
   public static getAyahProgress(surah: number, ayah: number): AyahProgress | null {
@@ -593,8 +661,10 @@ export class StorageService {
   // --- Plans ---
 
   public static getPlans(): StudyPlan[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.PLANS);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.PLANS);
+    const all: StudyPlan[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((p) => p.userId === user.id);
   }
 
   public static getActivePlan(goalId: string): StudyPlan | null {
@@ -603,30 +673,33 @@ export class StorageService {
   }
 
   public static savePlan(plan: StudyPlan): void {
-    const plans = this.getPlans();
+    const raw = safeStorage.getItem(STORAGE_KEYS.PLANS);
+    const all: StudyPlan[] = raw ? JSON.parse(raw) : [];
     // If activating this plan, archive/supersede previous active plans for this goal
     if (plan.status === 'active') {
-      plans.forEach((p) => {
+      all.forEach((p) => {
         if (p.goalId === plan.goalId && p.id !== plan.id && p.status === 'active') {
           p.status = 'superseded';
         }
       });
     }
 
-    const idx = plans.findIndex((p) => p.id === plan.id);
+    const idx = all.findIndex((p) => p.id === plan.id);
     if (idx >= 0) {
-      plans[idx] = plan;
+      all[idx] = plan;
     } else {
-      plans.unshift(plan);
+      all.unshift(plan);
     }
-    localStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(plans));
+    safeStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(all));
   }
 
   // --- Tasks ---
 
   public static getTasks(): DailyTask[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.TASKS);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.TASKS);
+    const all: DailyTask[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((t) => t.userId === user.id);
   }
 
   public static getTasksForDate(dateStr: string): DailyTask[] {
@@ -634,23 +707,31 @@ export class StorageService {
   }
 
   public static saveTasks(tasks: DailyTask[]): void {
-    localStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(tasks));
+    const user = this.getUser();
+    const raw = safeStorage.getItem(STORAGE_KEYS.TASKS);
+    const otherTasks = (raw ? (JSON.parse(raw) as DailyTask[]) : []).filter(
+      (t) => t.userId !== user.id
+    );
+    safeStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify([...otherTasks, ...tasks]));
   }
 
   public static updateTask(task: DailyTask): void {
-    const tasks = this.getTasks();
-    const idx = tasks.findIndex((t) => t.id === task.id);
+    const raw = safeStorage.getItem(STORAGE_KEYS.TASKS);
+    const all: DailyTask[] = raw ? JSON.parse(raw) : [];
+    const idx = all.findIndex((t) => t.id === task.id);
     if (idx >= 0) {
-      tasks[idx] = { ...task, updatedAt: new Date().toISOString() };
-      this.saveTasks(tasks);
+      all[idx] = { ...task, updatedAt: new Date().toISOString() };
+      safeStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(all));
     }
   }
 
   // --- Sessions & Idempotency ---
 
   public static getSessions(): StudySession[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.SESSIONS);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.SESSIONS);
+    const all: StudySession[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((s) => s.userId === user.id);
   }
 
   /**
@@ -662,7 +743,7 @@ export class StorageService {
     idempotencyKey?: string
   ): { success: boolean; session: StudySession; message: string } {
     if (idempotencyKey) {
-      const rawTokens = localStorage.getItem(STORAGE_KEYS.IDEMPOTENCY);
+      const rawTokens = safeStorage.getItem(STORAGE_KEYS.IDEMPOTENCY);
       const tokens: string[] = rawTokens ? JSON.parse(rawTokens) : [];
       if (tokens.includes(idempotencyKey)) {
         return {
@@ -672,7 +753,7 @@ export class StorageService {
         };
       }
       tokens.push(idempotencyKey);
-      localStorage.setItem(STORAGE_KEYS.IDEMPOTENCY, JSON.stringify(tokens.slice(-500)));
+      safeStorage.setItem(STORAGE_KEYS.IDEMPOTENCY, JSON.stringify(tokens.slice(-500)));
     }
 
     const newSession: StudySession = {
@@ -683,7 +764,7 @@ export class StorageService {
 
     const sessions = this.getSessions();
     sessions.unshift(newSession);
-    localStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
+    safeStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(sessions));
 
     // Update Ayah Progress records for each ayah touched in the session!
     const progressMap = this.getProgressMap();
@@ -779,8 +860,10 @@ export class StorageService {
   // --- Reviews ---
 
   public static getReviews(): ReviewRecord[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.REVIEWS);
-    return raw ? JSON.parse(raw) : [];
+    const raw = safeStorage.getItem(STORAGE_KEYS.REVIEWS);
+    const all: ReviewRecord[] = raw ? JSON.parse(raw) : [];
+    const user = this.getUser();
+    return all.filter((r) => r.userId === user.id);
   }
 
   public static saveReview(review: Omit<ReviewRecord, 'id' | 'createdAt'>): ReviewRecord {
@@ -789,16 +872,64 @@ export class StorageService {
       id: `rev_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       createdAt: new Date().toISOString(),
     };
-    const reviews = this.getReviews();
-    reviews.unshift(newRecord);
-    localStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(reviews));
+    const raw = safeStorage.getItem(STORAGE_KEYS.REVIEWS);
+    const all: ReviewRecord[] = raw ? JSON.parse(raw) : [];
+    all.unshift(newRecord);
+    safeStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(all));
     return newRecord;
+  }
+
+  public static deleteUserData(userId: string): void {
+    // 1. Remove goals
+    const rawGoals = safeStorage.getItem(STORAGE_KEYS.GOALS);
+    if (rawGoals) {
+      const filtered = (JSON.parse(rawGoals) as MemorizationGoal[]).filter((g) => g.userId !== userId);
+      safeStorage.setItem(STORAGE_KEYS.GOALS, JSON.stringify(filtered));
+    }
+
+    // 2. Remove tasks
+    const rawTasks = safeStorage.getItem(STORAGE_KEYS.TASKS);
+    if (rawTasks) {
+      const filtered = (JSON.parse(rawTasks) as DailyTask[]).filter((t) => t.userId !== userId);
+      safeStorage.setItem(STORAGE_KEYS.TASKS, JSON.stringify(filtered));
+    }
+
+    // 3. Remove plans
+    const rawPlans = safeStorage.getItem(STORAGE_KEYS.PLANS);
+    if (rawPlans) {
+      const filtered = (JSON.parse(rawPlans) as StudyPlan[]).filter((p) => p.userId !== userId);
+      safeStorage.setItem(STORAGE_KEYS.PLANS, JSON.stringify(filtered));
+    }
+
+    // 4. Remove sessions
+    const rawSessions = safeStorage.getItem(STORAGE_KEYS.SESSIONS);
+    if (rawSessions) {
+      const filtered = (JSON.parse(rawSessions) as StudySession[]).filter((s) => s.userId !== userId);
+      safeStorage.setItem(STORAGE_KEYS.SESSIONS, JSON.stringify(filtered));
+    }
+
+    // 5. Remove reviews
+    const rawReviews = safeStorage.getItem(STORAGE_KEYS.REVIEWS);
+    if (rawReviews) {
+      const filtered = (JSON.parse(rawReviews) as ReviewRecord[]).filter((r) => r.userId !== userId);
+      safeStorage.setItem(STORAGE_KEYS.REVIEWS, JSON.stringify(filtered));
+    }
+
+    // 6. Remove progress map records for this user
+    const progressMap = this.getProgressMap();
+    const updatedMap: Record<string, AyahProgress> = {};
+    Object.keys(progressMap).forEach((k) => {
+      if (progressMap[k].userId !== userId) {
+        updatedMap[k] = progressMap[k];
+      }
+    });
+    this.saveProgressMap(updatedMap);
   }
 
   // --- Proposals ---
 
   public static getProposals(): PlanChangeProposal[] {
-    const raw = localStorage.getItem(STORAGE_KEYS.PROPOSALS);
+    const raw = safeStorage.getItem(STORAGE_KEYS.PROPOSALS);
     return raw ? JSON.parse(raw) : [];
   }
 
@@ -810,7 +941,7 @@ export class StorageService {
     } else {
       list.unshift(proposal);
     }
-    localStorage.setItem(STORAGE_KEYS.PROPOSALS, JSON.stringify(list));
+    safeStorage.setItem(STORAGE_KEYS.PROPOSALS, JSON.stringify(list));
   }
 
   public static decideProposal(proposalId: string, decision: 'accepted' | 'rejected'): boolean {
@@ -855,7 +986,7 @@ export class StorageService {
   }
 
   public static resetToDefault(): void {
-    localStorage.clear();
+    safeStorage.clear();
     this.seedInitialData();
   }
 }
